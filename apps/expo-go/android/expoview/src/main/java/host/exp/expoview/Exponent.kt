@@ -27,6 +27,7 @@ import host.exp.exponent.experience.ExpoNativeHost
 import host.exp.exponent.kernel.ExponentUrls
 import host.exp.exponent.kernel.ExponentUrls.addHeadersFromJSONObject
 import host.exp.exponent.kernel.KernelConstants
+import host.exp.exponent.network.DevServerCookieJar
 import host.exp.exponent.network.ExpoResponse
 import host.exp.exponent.network.ExponentHttpClient.SafeCallback
 import host.exp.exponent.network.ExponentNetwork
@@ -384,6 +385,7 @@ class Exponent private constructor(val context: Context, val application: Applic
         .connectTimeout(HttpUrlConnectionNetworkFetcher.HTTP_DEFAULT_TIMEOUT.toLong(), TimeUnit.MILLISECONDS)
         .readTimeout(0, TimeUnit.MILLISECONDS)
         .writeTimeout(0, TimeUnit.MILLISECONDS)
+        .cookieJar(DevServerCookieJar)
         .addInterceptor(ExpoNetworkInspectOkHttpAppInterceptor())
         .addNetworkInterceptor(ExpoNetworkInspectOkHttpNetworkInterceptor())
         .build()
