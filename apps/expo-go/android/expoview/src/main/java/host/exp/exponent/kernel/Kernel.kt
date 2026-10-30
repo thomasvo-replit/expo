@@ -73,6 +73,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import okhttp3.Request
 import org.json.JSONException
 import org.json.JSONObject
 import java.lang.ref.WeakReference
@@ -522,7 +523,45 @@ class Kernel : KernelInterface() {
     } else {
       ExperienceOptions(projectUri, projectUri, options.notification, options.notificationObject)
     }
-    openManifestUrl(getManifestUrlFromFullUri(resolved.manifestUri), resolved, true)
+    val manifestUrl = getManifestUrlFromFullUri(resolved.manifestUri)
+    val sessionUrl = getSessionUrlFromFullUri(resolved.manifestUri)
+    if (sessionUrl == null) {
+      openManifestUrl(manifestUrl, resolved, true)
+      return
+    }
+    kernelScope.launch {
+      withContext(Dispatchers.IO) { sendSessionRequest(sessionUrl) }
+      openManifestUrl(manifestUrl, resolved, true)
+    }
+  }
+
+  /**
+   * The manifest URL drops query parameters that Expo Go doesn't use, so that the same server is
+   * always the same project. A dev server behind a login can still need them, for example a
+   * short-lived token that it exchanges for a session cookie. Returns the scanned URL as HTTP when it
+   * has such parameters, so it can be requested once before the manifest.
+   */
+  private fun getSessionUrlFromFullUri(uriString: String?): String? {
+    if (uriString == null || uriString.contains(ExponentManifest.DEEP_LINK_SEPARATOR_WITH_SLASH)) {
+      return null
+    }
+    val uri = Uri.parse(uriString)
+    val hasExtraQueryParameters = uri.queryParameterNames.any { it !in MANIFEST_QUERY_PARAMETERS }
+    if (!hasExtraQueryParameters) {
+      return null
+    }
+    return ExponentUrls.toHttp(uri.buildUpon().fragment(null).build().toString())
+  }
+
+  // Cookies the server sets are kept by the shared client's cookie jar and sent on the manifest,
+  // bundle, and asset requests that follow. Failures are ignored: loading continues as before.
+  private fun sendSessionRequest(sessionUrl: String) {
+    try {
+      val request = Request.Builder().url(sessionUrl).build()
+      OkHttpClientProvider.getOkHttpClient().newCall(request).execute().close()
+    } catch (e: Exception) {
+      EXL.e(TAG, e)
+    }
   }
 
   private fun getManifestUrlFromFullUri(uriString: String?): String? {
@@ -942,6 +981,14 @@ class Kernel : KernelInterface() {
   companion object {
     private val TAG = Kernel::class.java.simpleName
     private lateinit var instance: Kernel
+
+    // Query parameters that getManifestUrlFromFullUri keeps as part of the project's identity.
+    private val MANIFEST_QUERY_PARAMETERS = setOf(
+      ExponentManifest.QUERY_PARAM_KEY_RELEASE_CHANNEL,
+      ExponentManifest.QUERY_PARAM_KEY_EXPO_UPDATES_RUNTIME_VERSION,
+      ExponentManifest.QUERY_PARAM_KEY_EXPO_UPDATES_CHANNEL_NAME,
+      ExponentManifest.QUERY_PARAM_KEY_SNACK_CHANNEL
+    )
 
     // Activities/Tasks
     private val manifestUrlToExperienceActivityTask =

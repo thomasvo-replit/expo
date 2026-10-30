@@ -34,7 +34,7 @@ class ExponentNetwork constructor(
   )
 
   // Warning: this doesn't WRITE to the cache either. Don't use this to populate the cache in the background.
-  val noCacheClient: OkHttpClient = OkHttpClient.Builder().build()
+  val noCacheClient: OkHttpClient = OkHttpClient.Builder().cookieJar(DevServerCookieJar).build()
 
   interface OkHttpClientFactory {
     fun getNewClient(): OkHttpClient
@@ -43,6 +43,7 @@ class ExponentNetwork constructor(
   private fun createHttpClientBuilder(): OkHttpClient.Builder {
     val clientBuilder = OkHttpClient.Builder()
       .cache(cache)
+      .cookieJar(DevServerCookieJar)
     if (ExpoViewBuildConfig.DEBUG) {
       // FIXME: 8/9/17
       // clientBuilder.addNetworkInterceptor(new StethoInterceptor());

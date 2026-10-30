@@ -11,6 +11,7 @@
 
 #import "Expo_Go-Swift.h"
 
+#import <CocoaLumberjack/CocoaLumberjack.h>
 #import <React/RCTUtils.h>
 #import <sys/utsname.h>
 
@@ -26,10 +27,21 @@ static BOOL isEASUpdateHost(NSString * _Nullable host)
   return [host isEqualToString:@"u.expo.dev"] || [host isEqualToString:@"staging-u.expo.dev"];
 }
 
+static BOOL isManifestQueryParameter(NSString *name)
+{
+  return [name isEqualToString:@"release-channel"] ||
+    [name isEqualToString:@"runtime-version"] ||
+    [name isEqualToString:@"channel-name"] ||
+    [name isEqualToString:@"snack-channel"];
+}
+
 @interface EXAppLoaderExpoUpdates ()
 
 @property (nonatomic, strong, nullable) NSURL *manifestUrl;
 @property (nonatomic, strong, nullable) NSURL *httpManifestUrl;
+@property (nonatomic, strong, nullable) NSURL *sessionUrl;
+@property (nonatomic, strong, nullable) NSURLSessionDataTask *sessionTask;
+@property (nonatomic, assign) NSUInteger requestGeneration;
 
 @property (nonatomic, strong, nullable) EXManifestsManifest *confirmedManifest;
 @property (nonatomic, strong, nullable) EXManifestsManifest *optimisticManifest;
@@ -92,6 +104,7 @@ static BOOL isEASUpdateHost(NSString * _Nullable host)
     _logger = [[EXUpdatesLogger alloc] init];
     _manifestUrl = url;
     _httpManifestUrl = [EXAppLoaderExpoUpdates _httpUrlFromManifestUrl:_manifestUrl];
+    _sessionUrl = [EXAppLoaderExpoUpdates _sessionUrlFromManifestUrl:url];
     _appLoaderQueue = dispatch_queue_create("host.exp.exponent.LoaderQueue", DISPATCH_QUEUE_SERIAL);
   }
   return self;
@@ -99,8 +112,16 @@ static BOOL isEASUpdateHost(NSString * _Nullable host)
 
 #pragma mark - getters and lifecycle
 
+- (void)dealloc
+{
+  [_sessionTask cancel];
+}
+
 - (void)_reset
 {
+  _requestGeneration++;
+  [_sessionTask cancel];
+  _sessionTask = nil;
   _confirmedManifest = nil;
   _optimisticManifest = nil;
   _bundle = nil;
@@ -180,6 +201,32 @@ static BOOL isEASUpdateHost(NSString * _Nullable host)
 {
   [self _reset];
   if (_manifestUrl) {
+    if (_sessionUrl) {
+      // Exchange the scanned query for cookies before loading the canonical manifest. Updates,
+      // React Native HTTP/image requests and JS WebSockets already use shared native cookie storage.
+      // This is app-global storage, not project-isolated authentication.
+      NSURLSession *session = [NSURLSession sessionWithConfiguration:[NSURLSessionConfiguration defaultSessionConfiguration]];
+      NSUInteger requestGeneration = _requestGeneration;
+      __weak typeof(self) weakSelf = self;
+      _sessionTask = [session dataTaskWithURL:_sessionUrl completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+          typeof(self) strongSelf = weakSelf;
+          // Cancellation can still deliver a completion, including one already queued on main.
+          if (!strongSelf || strongSelf.requestGeneration != requestGeneration) {
+            return;
+          }
+          strongSelf.sessionTask = nil;
+          if (error) {
+            // Do not log the error's URL: it may contain a short-lived credential.
+            DDLogWarn(@"Development server session request failed; continuing with manifest loading.");
+          }
+          [strongSelf _beginRequest];
+        });
+      }];
+      [_sessionTask resume];
+      [session finishTasksAndInvalidate];
+      return;
+    }
     [self _beginRequest];
   }
 }
@@ -404,7 +451,43 @@ static BOOL isEASUpdateHost(NSString * _Nullable host)
   NSMutableString *path = [((components.path) ? components.path : @"") mutableCopy];
   path = [[EXKernelLinkingManager stringByRemovingDeepLink:path] mutableCopy];
   components.path = path;
+  if ([self _sessionUrlFromManifestUrl:url]) {
+    // Keep transient bootstrap parameters out of the update URL and its cache/scope identity.
+    // Filter the encoded query directly: rebuilding queryItems can turn %2B into a literal +.
+    NSMutableArray<NSString *> *queryItems = [NSMutableArray array];
+    for (NSString *item in [components.percentEncodedQuery componentsSeparatedByString:@"&"]) {
+      NSString *name = [[[item componentsSeparatedByString:@"="] firstObject] stringByRemovingPercentEncoding];
+      if (isManifestQueryParameter(name)) {
+        [queryItems addObject:item];
+      }
+    }
+    components.percentEncodedQuery = queryItems.count > 0 ? [queryItems componentsJoinedByString:@"&"] : nil;
+    components.fragment = nil;
+  }
   return [components URL];
+}
+
++ (nullable NSURL *)_sessionUrlFromManifestUrl:(NSURL *)url
+{
+  NSURLComponents *components = [NSURLComponents componentsWithURL:url resolvingAgainstBaseURL:YES];
+  // Both modern and legacy deep-link queries belong to the running app, not a session exchange.
+  NSString *path = components.path ?: @"";
+  if (![[EXKernelLinkingManager stringByRemovingDeepLink:path] isEqualToString:path]) {
+    return nil;
+  }
+  BOOL hasExtraQueryParameters = NO;
+  for (NSURLQueryItem *item in components.queryItems) {
+    if (!isManifestQueryParameter(item.name)) {
+      hasExtraQueryParameters = YES;
+      break;
+    }
+  }
+  if (!hasExtraQueryParameters) {
+    return nil;
+  }
+  components.scheme = ([components.scheme isEqualToString:@"exps"] || [components.scheme isEqualToString:@"https"]) ? @"https" : @"http";
+  components.fragment = nil;
+  return components.URL;
 }
 
 - (BOOL)_initializeDatabase

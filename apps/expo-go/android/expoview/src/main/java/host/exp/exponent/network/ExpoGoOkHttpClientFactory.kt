@@ -18,7 +18,9 @@ class ExpoGoOkHttpClientFactory(private val exponentNetwork: ExponentNetwork) : 
       .connectTimeout(0, TimeUnit.MILLISECONDS)
       .readTimeout(0, TimeUnit.MILLISECONDS)
       .writeTimeout(0, TimeUnit.MILLISECONDS)
-      .cookieJar(ReactCookieJarContainer())
+      // The container drops cookies until a jar is installed, and NetworkingModule only replaces it
+      // for the project's own networking client. Manifest, bundle, and dev server requests keep this one.
+      .cookieJar(ReactCookieJarContainer().apply { setCookieJar(DevServerCookieJar) })
       .cache(exponentNetwork.cache)
       .addInterceptor(ExpoNetworkInspectOkHttpAppInterceptor())
       .addNetworkInterceptor(ExpoNetworkInspectOkHttpNetworkInterceptor())
